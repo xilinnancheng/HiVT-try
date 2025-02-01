@@ -194,10 +194,11 @@ def process_argoverse(
         traffic_controls,
         lane_actor_index,
         lane_actor_vectors,
+        lane_positions,
     ) = get_lane_features(
         am, node_inds_19, node_positions_19, origin, rotate_mat, city, radius
     )
-
+    
     y = None if split == "test" else x[:, 20:]
     seq_id = os.path.splitext(os.path.basename(raw_path))[0]
 
@@ -222,6 +223,7 @@ def process_argoverse(
         "city": city,
         "origin": origin.unsqueeze(0),
         "theta": theta,
+        "lane_positions": lane_positions #[L , 2]
     }
 
 
@@ -234,14 +236,14 @@ def get_lane_features(
     city: str,
     radius: float,
 ) -> Tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
+    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
 ]:
     (
         lane_positions,
         lane_vectors,
         is_intersections,
         turn_directions,
-        traffic_controls,
+        traffic_controls
     ) = ([], [], [], [], [])
     lane_ids = set()
     for node_position in node_positions:
@@ -296,4 +298,5 @@ def get_lane_features(
         traffic_controls,
         lane_actor_index,
         lane_actor_vectors,
+        lane_positions,
     )

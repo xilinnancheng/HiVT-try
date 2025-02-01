@@ -14,14 +14,14 @@ parallel: false
 lr: 0.0005
 weight_decay: 0.0001
 T_max: 64
-root: /root/data
+root: /root/autodl-tmp/data/
 train_batch_size: 32
 val_batch_size: 32
 shuffle: true
 num_workers: 8
 pin_memory: true
 persistent_workers: true
-gpus: 0
-max_epochs: 64
+gpus: 1
+max_epochs: 30
 monitor: val_minFDE
 save_top_k: 5

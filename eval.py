@@ -17,10 +17,11 @@ import pytorch_lightning as pl
 from torch_geometric.data import DataLoader
 
 from datasets import ArgoverseV1Dataset
+from torch.utils.data import random_split
 from models.hivt import HiVT
 
 if __name__ == "__main__":
-    pl.seed_everything(2022)
+    # pl.seed_everything(2022)
 
     parser = ArgumentParser()
     parser.add_argument("--root", type=str, required=True)
@@ -33,11 +34,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     trainer = pl.Trainer.from_argparse_args(args)
-    model = HiVT.load_from_checkpoint(checkpoint_path=args.ckpt_path, parallel=True)
-    val_dataset = ArgoverseV1Dataset(
+    model = HiVT.load_from_checkpoint(checkpoint_path=args.ckpt_path, parallel=False)
+    dataset = ArgoverseV1Dataset(
         root=args.root, split="val", local_radius=model.hparams.local_radius
     )
-    dataloader = DataLoader(
+    
+    pred_size = 32
+    val_size = len(dataset) - pred_size
+    
+    val_dataset, pred_dataset = random_split(dataset, [val_size, pred_size])
+    
+    val_dataloader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
@@ -45,4 +52,18 @@ if __name__ == "__main__":
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
     )
-    trainer.validate(model, dataloader)
+    
+    pred_dataloader = DataLoader(
+        pred_dataset,
+        batch_size = 1,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        persistent_workers=args.persistent_workers,
+    )
+    
+    # predict model result
+    trainer.predict(model, pred_dataloader)
+    
+    # valide model performance
+    # trainer.validate(model, val_dataloader)

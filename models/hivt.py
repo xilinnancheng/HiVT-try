@@ -25,6 +25,8 @@ from models import GlobalInteractor
 from models import LocalEncoder
 from models import MLPDecoder
 from utils import TemporalData
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 class HiVT(pl.LightningModule):
@@ -110,12 +112,17 @@ class HiVT(pl.LightningModule):
         else:
             data["rotate_mat"] = None
 
+        #[N, D]
         local_embed = self.local_encoder(data=data)
+        # [F, N, D]
         global_embed = self.global_interactor(data=data, local_embed=local_embed)
+        
+        # [F, N, H, 4] [N, F]
         y_hat, pi = self.decoder(local_embed=local_embed, global_embed=global_embed)
         return y_hat, pi
 
     def training_step(self, data, batch_idx):
+        # [F, N, H, 4], [N, F]
         y_hat, pi = self(data)
         reg_mask = ~data["padding_mask"][:, self.historical_steps :]
         valid_steps = reg_mask.sum(dim=-1)
@@ -126,6 +133,7 @@ class HiVT(pl.LightningModule):
         best_mode = l2_norm.argmin(dim=0)
         y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
         reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
+        # [N, F]
         soft_target = (
             F.softmax(-l2_norm[:, cls_mask] / valid_steps[cls_mask], dim=0).t().detach()
         )
@@ -191,6 +199,54 @@ class HiVT(pl.LightningModule):
             on_epoch=True,
             batch_size=y_agent.size(0),
         )
+    
+    def predict_step(self, data, batch_idx):
+        # [F, N, H, 4], [N, F]
+        y_hat, pi = self(data)
+        
+        # [N, F, H, 2]
+        pred_traj = y_hat[:,data['av_index'],:,:2].transpose(0, 1).squeeze(0).cpu().numpy()
+        prob = torch.softmax(pi[data['av_index']], dim = -1).squeeze(0).cpu().numpy()
+        
+        # lane: [L, 2]
+        lane_pos = data['lane_positions'].cpu().numpy()
+        
+        # av ground truth:
+        y = data.y[data['av_index']].squeeze(0).cpu().numpy()
+        
+        x_min = float('inf')
+        x_max = float('-inf')
+        y_min = float('inf')
+        y_max = float('-inf')
+        
+        extra_dim = 5
+        
+        fig, ax = plt.subplots()
+        legend = []
+        ax.plot(y[:,0], y[:, 1], 'b', ls = '--')
+        legend.append("Ground truth")
+        for i in range(len(pred_traj)):
+            ax.plot(pred_traj[i,:,0], pred_traj[i, :, 1], 'r', ls = '--', alpha = prob[i])
+            x_min = min(x_min, np.min(pred_traj[i,:,0]))
+            x_max = max(x_max, np.max(pred_traj[i,:,0]))
+            y_min = min(y_min, np.min(pred_traj[i,:,1]))
+            y_max = max(y_max, np.max(pred_traj[i,:,1]))
+            legend.append(f'mode {i}:{prob[i]:.3f}')
+        
+        ax.legend(legend)
+        ax.scatter(lane_pos[:,0],lane_pos[:,1], s = 5)
+        ax.set_xlim((x_min > 0.0 if 0.9 else 1.1) * x_min - extra_dim, (x_max > 0.0 if 0.9 else 1.1) * x_max + extra_dim)
+        ax.set_ylim((y_min > 0.0 if 0.9 else 1.1) * y_min - extra_dim, (y_max > 0.0 if 0.9 else 1.1) * y_max + extra_dim)
+        
+        fig.canvas.draw()
+        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = torch.from_numpy(img).permute(2, 0, 1)
+        img_str = f'Scenario {batch_idx}'
+        self.logger.experiment.add_image(img_str, img, global_step = 0)
+        
+        plt.close(fig)
+        
 
     def configure_optimizers(self):
         decay = set()
@@ -235,9 +291,7 @@ class HiVT(pl.LightningModule):
 
         optim_groups = [
             {
-                "params": [
-                    param_dict[param_name] for param_name in sorted(list(decay))
-                ],
+                "params": [ param_dict[param_name] for param_name in sorted(list(decay))],
                 "weight_decay": self.weight_decay,
             },
             {

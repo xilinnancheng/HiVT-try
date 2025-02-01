@@ -166,6 +166,7 @@ class MLPDecoder(nn.Module):
     def forward(
         self, local_embed: torch.Tensor, global_embed: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        
         pi = (
             self.pi(
                 torch.cat(
@@ -179,15 +180,18 @@ class MLPDecoder(nn.Module):
             .squeeze(-1)
             .t()
         )
+        
         out = self.aggr_embed(
             torch.cat(
                 (global_embed, local_embed.expand(self.num_modes, *local_embed.shape)),
                 dim=-1,
             )
         )
+        
         loc = self.loc(out).view(
             self.num_modes, -1, self.future_steps, 2
         )  # [F, N, H, 2]
+        
         if self.uncertain:
             scale = (
                 F.elu_(self.scale(out), alpha=1.0).view(

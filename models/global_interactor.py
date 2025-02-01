@@ -75,6 +75,7 @@ class GlobalInteractor(nn.Module):
             data["positions"][edge_index[0], self.historical_steps - 1]
             - data["positions"][edge_index[1], self.historical_steps - 1]
         )
+        
         if data["rotate_mat"] is None:
             rel_embed = self.rel_embed(rel_pos)
         else:

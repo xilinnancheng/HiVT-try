@@ -84,7 +84,7 @@ class LocalEncoder(nn.Module):
                 data["positions"][data[f"edge_index_{t}"][0], t]
                 - data["positions"][data[f"edge_index_{t}"][1], t]
             )
-
+        
         if self.parallel:
             snapshots = [None] * self.historical_steps
             for t in range(self.historical_steps):
@@ -115,6 +115,7 @@ class LocalEncoder(nn.Module):
                 edge_index, edge_attr = self.drop_edge(
                     data[f"edge_index_{t}"], data[f"edge_attr_{t}"]
                 )
+
                 out[t] = self.aa_encoder(
                     x=data.x[:, t],
                     t=t,
@@ -126,7 +127,7 @@ class LocalEncoder(nn.Module):
             out = torch.stack(out)  # [T, N, D]
 
         padding_mask = data["padding_mask"][:, : self.historical_steps]
-        out = self.temporal_encoder(x=out, padding_mask=padding_mask)  # [T, D]
+        out = self.temporal_encoder(x=out, padding_mask=padding_mask)  # [N, D]
 
         edge_index, edge_attr = self.drop_edge(
             data["lane_actor_index"], data["lane_actor_vectors"]
@@ -159,11 +160,11 @@ class AAEncoder(MessagePassing):
     ) -> None:
         super(AAEncoder, self).__init__(aggr="add", node_dim=0, **kwargs)
 
-        self.center_embed = nn.SingleInputEmbedding(
-            in_channel=node_dim, out_channel=embed_dim
+        self.center_embed = SingleInputEmbedding(
+            in_channel = node_dim, out_channel = embed_dim
         )
-        self.nbr_embed = nn.MultipleInputEmbedding(
-            in_channel=[node_dim, edge_dim], out_channel=embed_dim
+        self.nbr_embed = MultipleInputEmbedding(
+            in_channels=[node_dim, edge_dim], out_channel=embed_dim
         )
         self.layer_norm1 = nn.LayerNorm(embed_dim)
         self.layer_norm2 = nn.LayerNorm(embed_dim)
@@ -175,9 +176,9 @@ class AAEncoder(MessagePassing):
         self.embed_dim = embed_dim
         self.parallel = parallel
 
-        self.mlp = nn.Sequencial(
+        self.mlp = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 4),
-            nn.ReLU(in_place=True),
+            nn.ReLU(inplace=True),
             nn.Dropout(dropout),
             nn.Linear(embed_dim * 4, embed_dim),
             nn.Dropout(dropout),
@@ -193,8 +194,9 @@ class AAEncoder(MessagePassing):
 
         self.lin_ih = nn.Linear(embed_dim, embed_dim)
         self.lin_hh = nn.Linear(embed_dim, embed_dim)
+        self.lin_self = nn.Linear(embed_dim, embed_dim)
 
-        self.apply(init_weight)
+        self.apply(init_weights)
 
     def forward(
         self,
@@ -206,16 +208,17 @@ class AAEncoder(MessagePassing):
         rotate_mat: Optional[torch.Tensor] = None,
         size: Size = None,
     ) -> torch.Tensor:
-        if rotate_max is None:
+        if rotate_mat is None:
             center_embed = self.center_embed(x)
         else:
             center_embed = self.center_embed(
-                torch.bmm(x.unsqueeze(-2), rotate_mat).squeeze(2)
+                torch.bmm(x.unsqueeze(-2), rotate_mat).squeeze(-2)
             )
 
         center_embed = torch.where(
             bos_mask.unsqueeze(-1), self.bos_token[t], center_embed
         )
+
         center_embed = center_embed + self._mha_block(
             x=x,
             center_embed=self.layer_norm1(center_embed),
@@ -246,11 +249,10 @@ class AAEncoder(MessagePassing):
             center_rotate_mat = rotate_mat[edge_index[1]]
             nbr_embed = self.nbr_embed(
                 [
-                    torch.bmm(x_j.unsqueeze(-2), center_rotate_mat),
-                    torch.bmm(edge_attr.unsqueeze(-2), center_rotate_mat),
+                    torch.bmm(x_j.unsqueeze(-2), center_rotate_mat).squeeze(-2),
+                    torch.bmm(edge_attr.unsqueeze(-2), center_rotate_mat).squeeze(-2),
                 ]
             )
-
         query = self.lin_q(center_embed_i).view(
             -1, self.num_heads, self.embed_dim // self.num_heads
         )
@@ -269,8 +271,8 @@ class AAEncoder(MessagePassing):
 
     def update(self, inputs: torch.Tensor, center_embed: torch.Tensor) -> torch.Tensor:
         inputs = inputs.view(-1, self.embed_dim)
-        gata = torch.sigmoid(self.lin_ih(inputs) + slef.lin_hh(center_embed))
-        return inputs + gate * (self.lin_self(center_embed) - inpus)
+        gate = torch.sigmoid(self.lin_ih(inputs) + self.lin_hh(center_embed))
+        return inputs + gate * (self.lin_self(center_embed) - inputs)
 
     def _mha_block(
         self,
@@ -282,7 +284,7 @@ class AAEncoder(MessagePassing):
         size: Size,
     ) -> torch.Tensor:
         center_embed = self.out_proj(
-            self.propogate(
+            self.propagate(
                 center_embed=center_embed,
                 x=x,
                 edge_index=edge_index,
@@ -313,7 +315,7 @@ class TemporalEncoder(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer=encoder_layer,
-            num_layers=encoder_layer,
+            num_layers=num_layers,
             norm=nn.LayerNorm(embed_dim),
         )
         self.historical_steps = historical_steps
@@ -330,7 +332,7 @@ class TemporalEncoder(nn.Module):
         nn.init.normal_(self.padding_token, mean=0.0, std=0.02)
         nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
         nn.init.normal_(self.pos_embed, mean=0.0, std=0.02)
-        self.apply(init_weight)
+        self.apply(init_weights)
 
     def forward(self, x: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
         x = torch.where(padding_mask.t().unsqueeze(-1), self.padding_token, x)
@@ -354,7 +356,6 @@ class TemporalEncoder(nn.Module):
 
 
 class TemporalEncoderLayer(nn.Module):
-
     def __init__(
         self, embed_dim: int, num_heads: int = 8, dropout: float = 0.1
     ) -> None:
@@ -364,15 +365,15 @@ class TemporalEncoderLayer(nn.Module):
         )
         self.layer_norm1 = nn.LayerNorm(embed_dim)
         self.layer_norm2 = nn.LayerNorm(embed_dim)
-        self.drop_out1 = nn.DropOout(dropout)
-        self.mlp = nn.Sequencial(
+        self.drop_out1 = nn.Dropout(dropout)
+        self.mlp = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 4),
-            nn.ReLU(in_place=True),
-            nn.DropOut(dropout),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
             nn.Linear(embed_dim * 4, embed_dim),
-            nn.DropOut(dropout),
+            nn.Dropout(dropout),
         )
-        self.apply(init_weight)
+        self.apply(init_weights)
 
     def forward(
         self,
@@ -394,8 +395,8 @@ class TemporalEncoderLayer(nn.Module):
     ) -> torch.Tensor:
         x = self.self_attn(
             x, x, x, attn_mask=attn_mask, key_padding_mask=key_padding_mask
-        )
-        return drop_out1(x)
+        )[0]
+        return self.drop_out1(x)
 
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
         return self.mlp(x)
@@ -412,8 +413,6 @@ class ALEncoder(MessagePassing):
         **kwargs,
     ) -> None:
         super(ALEncoder, self).__init__(aggr="add", node_dim=0, **kwargs)
-
-        self.node_dim = node_dim
         self.edge_dim = edge_dim
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -497,7 +496,7 @@ class ALEncoder(MessagePassing):
                 [x_j, edge_attr],
                 [
                     self.is_intersection_embed[is_intersections_j],
-                    self.turn_direction_embed[turn_direction_j],
+                    self.turn_direction_embed[turn_directions_j],
                     self.traffic_control_embed[traffic_controls_j],
                 ],
             )
@@ -506,11 +505,11 @@ class ALEncoder(MessagePassing):
             x_j = self.lane_embed(
                 [
                     torch.bmm(x_j.unsqueeze(-2), rotate_mat).squeeze(-2),
-                    torch.bmm(edge_attr.unsqueeze(-2), rotate_mat).squeeze(2),
+                    torch.bmm(edge_attr.unsqueeze(-2), rotate_mat).squeeze(-2),
                 ],
                 [
                     self.is_intersection_embed[is_intersections_j],
-                    self.turn_direction_embed[turn_direction_j],
+                    self.turn_direction_embed[turn_directions_j],
                     self.traffic_control_embed[traffic_controls_j],
                 ],
             )
@@ -547,7 +546,6 @@ class ALEncoder(MessagePassing):
         rotate_mat: Optional[torch.Tensor],
         size: Size,
     ) -> torch.Tensor:
-
         x_actor = self.out_proj(
             self.propagate(
                 edge_index=edge_index,
@@ -556,7 +554,7 @@ class ALEncoder(MessagePassing):
                 is_intersections=is_intersections,
                 turn_directions=turn_directions,
                 traffic_controls=traffic_controls,
-                rotate_mat=rotata_mat,
+                rotate_mat=rotate_mat,
                 size=size,
             )
         )
